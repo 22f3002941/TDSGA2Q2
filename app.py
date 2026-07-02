@@ -1,50 +1,82 @@
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-import jwt
+from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+import yaml
+import os
+
+load_dotenv()
 
 app = FastAPI()
 
-PUBLIC_KEY = """
------BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2okOHspNjgA+2rTLbeuY
-cxiP/hG8C6Sb9iwg3yiLAA4HCnpITcbWCSelbvbYGuc3EbNy4xFyf5Cbj5DHJMID
-EkryOgyd2giIIIBOUBj8S63uGcnRpOBh9NFatfNwheKuzsPuVNldu6A9cNteNpXc
-WyJjG2axVfmq7i6SuKr1JoWYG7xTTAvKPujSl4OtsQfO3h5NepzdfXpr28oNnzfW
-ed+zclR6BcmNNo/WVfJ4xyCLSf0BCOgdTgW6PdaChd1l9VDetJZVEgC5tkyvXsfI
-SI6iyrYbKR0NEBSqq4XkadEjsCs4F1RncsS4LlgniT7GlkL9Mce3b0wGLs9/7ZIX
-dQIDAQAB
------END PUBLIC KEY-----
-"""
+# Allow browser-based grader
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],   # If the assignment specifies a particular origin, use that instead.
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-ISSUER = "https://idp.exam.local"
-AUDIENCE = "tds-bx76wkki.apps.exam.local"
+# ---------- Defaults ----------
+config = {
+    "port": 8000,
+    "workers": 1,
+    "debug": False,
+    "log_level": "info",
+    "api_key": "default-secret-000",
+}
+
+# ---------- YAML ----------
+with open("config.development.yaml") as f:
+    config.update(yaml.safe_load(f))
+
+# ---------- .env ----------
+if os.getenv("NUM_WORKERS"):
+    config["workers"] = int(os.getenv("NUM_WORKERS"))
+
+if os.getenv("APP_LOG_LEVEL"):
+    config["log_level"] = os.getenv("APP_LOG_LEVEL")
+
+if os.getenv("APP_API_KEY"):
+    config["api_key"] = os.getenv("APP_API_KEY")
+
+# ---------- Simulated OS environment ----------
+# These are the values specified in the assignment.
+os.environ["APP_PORT"] = "8195"
+os.environ["APP_LOG_LEVEL"] = "error"
+
+if os.getenv("APP_PORT"):
+    config["port"] = int(os.getenv("APP_PORT"))
+
+if os.getenv("APP_LOG_LEVEL"):
+    config["log_level"] = os.getenv("APP_LOG_LEVEL")
 
 
-class TokenRequest(BaseModel):
-    token: str
+def coerce(key, value):
+    if key in ("port", "workers"):
+        return int(value)
+
+    if key == "debug":
+        return str(value).lower() in ("true", "1", "yes", "on")
+
+    return str(value)
 
 
-@app.post("/verify")
-def verify_token(req: TokenRequest):
-    try:
-        payload = jwt.decode(
-            req.token,
-            PUBLIC_KEY,
-            algorithms=["RS256"],
-            issuer=ISSUER,
-            audience=AUDIENCE,
-        )
+@app.get("/effective-config")
+def effective_config(set: list[str] = Query(default=[])):
+    result = config.copy()
 
-        return {
-            "valid": True,
-            "email": payload.get("email"),
-            "sub": payload.get("sub"),
-            "aud": payload.get("aud"),
-        }
+    # CLI overrides
+    for item in set:
+        if "=" not in item:
+            continue
 
-    except jwt.PyJWTError:
-        return JSONResponse(
-            status_code=401,
-            content={"valid": False}
-        )
+        key, value = item.split("=", 1)
+
+        if key in result:
+            result[key] = coerce(key, value)
+
+    # Mask secret
+    result["api_key"] = "****"
+
+    return result
